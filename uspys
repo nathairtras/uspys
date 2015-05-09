@@ -1,0 +1,158 @@
+#!/usr/bin/env python
+import os
+import sys
+import json
+import urllib
+import httplib
+import calendar
+from datetime import datetime
+import xml.etree.ElementTree as ET
+from urlparse import urlunparse as uup
+
+
+##  Constants
+config_path = os.path.abspath(os.path.expanduser("~/.uspys/"))
+cred_file = os.path.join(config_path, "creds.json")
+tracking_file = os.path.join(config_path, "tracking.json")
+month_lkup = dict((v,k) for k,v in enumerate(calendar.month_abbr))
+
+
+##  Auth
+# Get the user ID
+
+def cache_user_id(user_id, cred_file):
+    if not os.path.exists(os.path.dirname(cred_file)):
+        os.makedirs(os.path.dirname(cred_file))
+    with open(cred_file, 'w') as f:
+        f.write('{"username": "%s"}' % user_id)
+        print("Password stored in %s" % cred_file)
+
+def request_user_id(cred_file):
+    request_message = "Please input your USPS API User:\t"
+    cache_message = "Do you wish to save your password in %s? (y/N):\t" % cred_file
+    user_id = raw_input(request_message)
+    cache_id = (raw_input(cache_message) or 'N').lower()
+    if cache_id == 'y':
+        cache_user_id(user_id, cred_file)
+    return user_id    
+
+def get_user_id():
+    if not os.path.exists(cred_file):
+        return request_user_id(cred_file)
+    else:
+        with open(cred_file, 'r') as f:
+            return json.load(f)["username"]
+
+
+##  Configuration
+# Get the tracking ID(s)
+def load_tracking_file():
+    if not os.path.exists(tracking_file):
+        with open(tracking_file, 'w') as f:
+            f.write("{}")
+        return {}
+    else:
+        with open(tracking_file, 'r') as f:
+            return json.load(f)
+
+def write_tracking_file(tracking_list):
+    with open(tracking_file, 'w') as f:
+        f.write(json.dumps(tracking_list))
+
+def update_tracking_file(tracking_id, description):
+    base = load_tracking_file()
+    base[tracking_id] = description
+    write_tracking_file(base)
+                    
+def get_tracking_ids():
+    try:
+        tracking_ids = [sys.argv[1]]
+        yn = (raw_input("Do you want to save this to your defaults? (y/N):\t") or 'n').strip().lower()
+        if yn == 'y':
+            description = raw_input("What do you want to call this record?:\t")
+            update_tracking_file(tracking_ids[0], description)
+        return tracking_ids
+    except:
+        return load_tracking_file().items()
+
+
+##  XML Decoding
+
+
+def children_to_json(tree):
+    out_json = {}
+    for child in tree:
+        out_json[child.tag] = child.text
+    return out_json
+
+def get_records(info):
+    detail = info.findall('TrackDetail') or []
+    summary = info.find('TrackSummary')
+    if summary is not None:
+        detail.insert(0, summary)
+    for record in detail:
+        yield children_to_json(record)
+
+def process_time(time_text):
+    h = int(time_text.split(" ")[0].strip().split(":")[0])
+    m = int(time_text.split(" ")[0].strip().split(":")[1])
+    ap = time_text.split(" ")[1].strip()
+    if ap == 'pm':
+        h = h + 12
+    return (h,m)
+
+def process_date(date_text):
+    y = int(date_text.split(',')[1].strip())
+    m = month_lkup[date_text.split(',')[0].split(' ')[0].strip()]
+    d = int(date_text.split(',')[0].split(' ')[1].strip())
+    return (y,m,d)
+
+def generate_timestamp(day_tuple, time_tuple):
+    return datetime(
+        day_tuple[0],
+        day_tuple[1],
+        day_tuple[2],
+        time_tuple[0],
+        time_tuple[1],
+    )
+
+def enrich_record(record):
+    day_tuple = process_date(record["EventDate"])
+    time_tuple = process_time(record["EventTime"])
+    record["EventTimestamp"] = generate_timestamp(day_tuple, time_tuple)
+    del record["EventDate"]
+    del record["EventTime"]
+    return(record)
+
+def parse_xml(xml):
+    records = get_records(ET.fromstring(xml).find('TrackInfo'))
+    for record in records:
+        yield enrich_record(record)
+
+##  API Requests
+def generate_params(user_id, tracking_id):
+    params = {
+        "API": "TrackV2",
+        "XML": '<TrackFieldRequest USERID="%s"><TrackID ID="%s"></TrackID></TrackFieldRequest>' % (user_id,tracking_id),
+    }
+    return urllib.urlencode(params)
+
+def get_response(user_id, tracking_id):
+    params = generate_params(user_id, tracking_id)
+    conn = httplib.HTTPConnection('production.shippingapis.com')
+    conn.request("POST", "/ShippingAPI.dll", params)
+    response = conn.getresponse()
+    return response.read()
+
+
+user_id = get_user_id()
+tracking_ids = get_tracking_ids()
+for tracking_id, description in tracking_ids:
+    print("%s | %s" % (tracking_id, description))
+    x = get_response(user_id, tracking_id)
+    records = sorted(list(parse_xml(x)), key=lambda k: k["EventTimestamp"], reverse=True)
+    for idx, record in enumerate(records):
+        label = "Status:  "
+        if idx == 0:
+           label = "Current: "
+        print("%s %s %s, %s %s | %s" % (label, record["EventTimestamp"], record["EventCity"], record["EventState"], record["EventZIPCode"], record["Event"]))
