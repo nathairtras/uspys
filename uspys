@@ -51,9 +51,8 @@ def load_tracking_file():
         with open(tracking_file, 'w') as f:
             f.write("{}")
         return {}
-    else:
-        with open(tracking_file, 'r') as f:
-            return json.load(f)
+    with open(tracking_file, 'r') as f:
+        return json.load(f)
 
 def write_tracking_file(tracking_list):
     with open(tracking_file, 'w') as f:
@@ -66,13 +65,16 @@ def update_tracking_file(tracking_id, description):
                     
 def get_tracking_ids():
     try:
-        tracking_ids = [sys.argv[1]]
+        tracking_id = sys.argv[1]
         yn = (raw_input("Do you want to save this to your defaults? (y/N):\t") or 'n').strip().lower()
         if yn == 'y':
             description = raw_input("What do you want to call this record?:\t")
-            update_tracking_file(tracking_ids[0], description)
-        return tracking_ids
+            update_tracking_file(tracking_id, description)
+        else:
+            return [(tracking_id, description)]
     except:
+        pass
+    finally:
         return load_tracking_file().items()
 
 
@@ -94,27 +96,45 @@ def get_records(info):
         yield children_to_json(record)
 
 def process_time(time_text):
-    h = int(time_text.split(" ")[0].strip().split(":")[0])
-    m = int(time_text.split(" ")[0].strip().split(":")[1])
-    ap = time_text.split(" ")[1].strip()
-    if ap == 'pm':
-        h = h + 12
-    return (h,m)
+    try:
+        h = int(time_text.split(" ")[0].strip().split(":")[0])
+        m = int(time_text.split(" ")[0].strip().split(":")[1])
+        ap = time_text.split(" ")[1].strip()
+        if ap == 'pm':
+            h = h + 12
+        return (h,m)
+    except:
+        return None
 
 def process_date(date_text):
-    y = int(date_text.split(',')[1].strip())
-    m = month_lkup[date_text.split(',')[0].split(' ')[0].strip()]
-    d = int(date_text.split(',')[0].split(' ')[1].strip())
-    return (y,m,d)
+    if date_text:
+        y = int(date_text.split(',')[1].strip())
+        m = month_lkup[date_text.split(',')[0].split(' ')[0].strip()]
+        d = int(date_text.split(',')[0].split(' ')[1].strip())
+        return (y,m,d)
+    else:
+        return None
 
 def generate_timestamp(day_tuple, time_tuple):
-    return datetime(
-        day_tuple[0],
-        day_tuple[1],
-        day_tuple[2],
-        time_tuple[0],
-        time_tuple[1],
-    )
+    try:
+        return datetime(
+            day_tuple[0],
+            day_tuple[1],
+            day_tuple[2],
+            time_tuple[0],
+            time_tuple[1]
+        )
+    except:
+        try:
+            return datetime(
+                day_tuple[0],
+                day_tuple[1],
+                day_tuple[2],
+                None,
+                None
+             )
+        except:
+            return None
 
 def enrich_record(record):
     day_tuple = process_date(record["EventDate"])
@@ -150,7 +170,7 @@ tracking_ids = get_tracking_ids()
 for tracking_id, description in tracking_ids:
     print("%s | %s" % (tracking_id, description))
     x = get_response(user_id, tracking_id)
-    records = sorted(list(parse_xml(x)), key=lambda k: k["EventTimestamp"], reverse=True)
+    records = sorted(list(parse_xml(x)), key=lambda k: k.get("EventTimestamp") or datetime(1970,1,1,0,0), reverse=True)
     for idx, record in enumerate(records):
         label = "Status:  "
         if idx == 0:
